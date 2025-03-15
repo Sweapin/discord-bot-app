@@ -373,7 +373,7 @@ async def deposit_tokens(interaction: discord.Interaction, amount: int):
 
     remaining = token_data[guild_id].get(user_id, 0)
     await interaction.response.send_message(
-        f"🏦f"🏦 You have deposited {amount} token(s) into the BO7 Bank. You have {remaining} token(s) remaining."
+        f"🏦 You have deposited {amount} token(s) into the BO7 Bank. You have {remaining} token(s) remaining."
     )
 
 # Command to check token balances
