@@ -1,4 +1,3 @@
-from keep_alive import keep_alive
 import discord
 from discord.ext import commands
 import json
@@ -7,7 +6,7 @@ import datetime
 from discord import app_commands
 
 # Bot configuration
-TOKEN = os.environ['BOT_TOKEN']
+TOKEN = os.environ.get('BOT_TOKEN')
 TOKEN_FILE = 'token_data.json'
 LOG_FILE = 'token_transactions.log'
 ADMIN_ROLE_NAME = 'Admin'  # Change this to match your server's admin role
@@ -367,5 +366,4 @@ async def bank_help_command(interaction: discord.Interaction):
 
 
 # Run the bot
-keep_alive()
 bot.run(TOKEN)

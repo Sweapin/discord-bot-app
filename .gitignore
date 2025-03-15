@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+token_data.json
+token_transactions.log
