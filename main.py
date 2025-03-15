@@ -6,15 +6,75 @@ import datetime
 import shutil
 from discord import app_commands
 import asyncio
+from flask import Flask
+from threading import Thread
 
 # Backup configuration
 BACKUP_DIR = 'backups'
 MAX_BACKUPS = 5  # Maximum number of backups to keep
 BACKUP_INTERVAL = 24 * 60 * 60  # 24 hours in seconds
 
+# Bot configuration
+TOKEN = os.environ.get('BOT_TOKEN')
+TOKEN_FILE = 'token_data.json'
+LOG_FILE = 'token_transactions.log'
+ADMIN_ROLE_NAME = 'Admin'  # Change this to match your server's admin role
+
+# Initialize bot with intents
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
+
+bot = commands.Bot(command_prefix='!', intents=intents)
+
 # Ensure backup directory exists
 if not os.path.exists(BACKUP_DIR):
     os.makedirs(BACKUP_DIR)
+
+# Load token data
+def load_token_data():
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+# Save token data
+def save_token_data(data):
+    with open(TOKEN_FILE, 'w') as f:
+        json.dump(data, f)
+
+# Log transaction
+def log_transaction(guild_name, action, admin=None, member=None, amount=None):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"[{timestamp}] [{guild_name}] {action}"
+
+    if admin:
+        try:
+            log_entry += f" | Admin: {admin.name}"
+            if hasattr(admin, 'discriminator') and admin.discriminator != '0':
+                log_entry += f"#{admin.discriminator}"
+        except AttributeError:
+            log_entry += f" | Admin: {admin}"
+            
+    if member:
+        try:
+            log_entry += f" | Member: {member.name}"
+            if hasattr(member, 'discriminator') and member.discriminator != '0':
+                log_entry += f"#{member.discriminator}"
+        except AttributeError:
+            log_entry += f" | Member: {member}"
+            
+    if amount is not None:
+        log_entry += f" | Amount: {amount}"
+
+    with open(LOG_FILE, 'a') as f:
+        f.write(log_entry + '\n')
+
+    return log_entry
+
+# Check if user has admin role
+def is_admin(member):
+    return discord.utils.get(member.roles, name=ADMIN_ROLE_NAME) is not None
 
 # Backup token data
 async def backup_token_data():
@@ -93,7 +153,17 @@ async def automatic_backup_task():
         await backup_token_data()
         await asyncio.sleep(BACKUP_INTERVAL)  # Wait for the interval period
 
-# Add to your bot startup
+# Add a Flask web server
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Discord bot is running!"
+
+def run_server():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
 @bot.event
 async def on_ready():
     print(f'Bot is online as {bot.user.name}')
@@ -222,91 +292,6 @@ async def confirm_restore(interaction: discord.Interaction, backup_number: int):
     else:
         await interaction.response.send_message("❌ Failed to restore from backup. Check server logs for details.", ephemeral=True)
 
-# Add a Flask web server
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Discord bot is running!"
-
-def run_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# Start the Flask server in a background thread
-server_thread = Thread(target=run_server)
-server_thread.daemon = True
-server_thread.start()
-
-# Rest of your bot code remains the same...
-# Bot configuration
-TOKEN = os.environ.get('BOT_TOKEN')
-TOKEN_FILE = 'token_data.json'
-LOG_FILE = 'token_transactions.log'
-ADMIN_ROLE_NAME = 'Admin'  # Change this to match your server's admin role
-
-# Initialize bot with intents
-intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True
-
-bot = commands.Bot(command_prefix='!', intents=intents)
-
-# Token data structure
-# {
-#   "guild_id": {
-#     "user_id": token_count
-#   }
-# }
-
-
-# Load token data
-def load_token_data():
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-
-# Save token data
-def save_token_data(data):
-    with open(TOKEN_FILE, 'w') as f:
-        json.dump(data, f)
-
-
-# Log transaction
-def log_transaction(guild_name, action, admin=None, member=None, amount=None):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_entry = f"[{timestamp}] [{guild_name}] {action}"
-
-    if admin:
-        log_entry += f" | Admin: {admin.name}#{admin.discriminator}"
-    if member:
-        log_entry += f" | Member: {member.name}#{member.discriminator}"
-    if amount is not None:
-        log_entry += f" | Amount: {amount}"
-
-    with open(LOG_FILE, 'a') as f:
-        f.write(log_entry + '\n')
-
-    return log_entry
-
-
-# Check if user has admin role
-def is_admin(member):
-    return discord.utils.get(member.roles, name=ADMIN_ROLE_NAME) is not None
-
-
-@bot.event
-async def on_ready():
-    print(f'Bot is online as {bot.user.name}')
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} command(s)")
-    except Exception as e:
-        print(f"Failed to sync commands: {e}")
-
-
 # Command to give tokens to a user (Admin only)
 @bot.tree.command(name="give_tokens",
                   description="Give callout tokens to a member (Admin only)")
@@ -348,7 +333,6 @@ async def give_tokens(interaction: discord.Interaction, member: discord.Member,
         f"✅ Successfully gave {amount} token(s) to {member.mention}. They now have {token_data[guild_id][user_id]} token(s)."
     )
 
-
 # Command to deposit tokens into the BO7 Bank
 @bot.tree.command(name="deposit",
                   description="Deposit your tokens into the BO7 Bank")
@@ -389,9 +373,8 @@ async def deposit_tokens(interaction: discord.Interaction, amount: int):
 
     remaining = token_data[guild_id].get(user_id, 0)
     await interaction.response.send_message(
-        f"🏦 You have deposited {amount} token(s) into the BO7 Bank. You have {remaining} token(s) remaining."
+        f"🏦f"🏦 You have deposited {amount} token(s) into the BO7 Bank. You have {remaining} token(s) remaining."
     )
-
 
 # Command to check token balances
 @bot.tree.command(name="balances",
@@ -436,7 +419,6 @@ async def check_balances(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed)
 
-
 # Command to check personal balance
 @bot.tree.command(name="balance", description="Check your token balance")
 async def check_balance(interaction: discord.Interaction):
@@ -457,7 +439,6 @@ async def check_balance(interaction: discord.Interaction):
 
     await interaction.response.send_message(
         f"You currently have {tokens} callout token(s).", ephemeral=True)
-
 
 # Command to view the transaction log (Admin only)
 @bot.tree.command(name="log",
@@ -491,7 +472,6 @@ async def view_log(interaction: discord.Interaction, entries: int = 10):
     log_content += "```"
 
     await interaction.response.send_message(log_content, ephemeral=True)
-
 
 # Command to remove tokens from a user (Admin only)
 @bot.tree.command(
@@ -553,7 +533,6 @@ async def remove_tokens(interaction: discord.Interaction,
         f"✅ Successfully removed {amount} token(s) from {member.mention}. They now have {remaining} token(s) remaining."
     )
 
-
 # Command to list all available bank commands
 @bot.tree.command(name="bank-help",
                   description="List all available token bank commands")
@@ -598,6 +577,11 @@ async def bank_help_command(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed)
 
-
-# Run the bot
-bot.run(TOKEN)
+# Start the Flask server in a background thread
+if __name__ == "__main__":
+    server_thread = Thread(target=run_server)
+    server_thread.daemon = True
+    server_thread.start()
+    
+    # Run the bot
+    bot.run(TOKEN)
