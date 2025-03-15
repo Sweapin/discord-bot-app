@@ -161,8 +161,11 @@ def home():
     return "Discord bot is running!"
 
 def run_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    try:
+        port = int(os.environ.get("PORT", 10000))
+        app.run(host='0.0.0.0', port=port)
+    except Exception as e:
+        print(f"Web server error: {str(e)}")
 
 @bot.event
 async def on_ready():
@@ -299,14 +302,15 @@ async def confirm_restore(interaction: discord.Interaction, backup_number: int):
                        amount="Number of tokens to give (1-3)")
 async def give_tokens(interaction: discord.Interaction, member: discord.Member,
                       amount: int):
+    # Defer the response
+    await interaction.response.defer(ephemeral=False)
+    
     if not is_admin(interaction.user):
-        await interaction.response.send_message(
-            "❌ Only admins can use this command.", ephemeral=True)
+        await interaction.followup.send("❌ Only admins can use this command.")
         return
 
     if amount < 1 or amount > 3:
-        await interaction.response.send_message(
-            "❌ You can only give 1-3 tokens at a time.", ephemeral=True)
+        await interaction.followup.send("❌ You can only give 1-3 tokens at a time.")
         return
 
     # Load token data
@@ -329,7 +333,7 @@ async def give_tokens(interaction: discord.Interaction, member: discord.Member,
     log_transaction(interaction.guild.name, "GIVE_TOKENS", interaction.user,
                     member, amount)
 
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"✅ Successfully gave {amount} token(s) to {member.mention}. They now have {token_data[guild_id][user_id]} token(s)."
     )
 
@@ -380,13 +384,15 @@ async def deposit_tokens(interaction: discord.Interaction, amount: int):
 @bot.tree.command(name="balances",
                   description="Check everyone's token balances")
 async def check_balances(interaction: discord.Interaction):
+    # Defer the response
+    await interaction.response.defer(ephemeral=False)
+    
     # Load token data
     token_data = load_token_data()
     guild_id = str(interaction.guild_id)
 
     if guild_id not in token_data or not token_data[guild_id]:
-        await interaction.response.send_message(
-            "No one has any tokens at the moment.", ephemeral=True)
+        await interaction.followup.send("No one has any tokens at the moment.")
         return
 
     # Create an embed for token balances
@@ -417,11 +423,14 @@ async def check_balances(interaction: discord.Interaction):
                     "CHECK_BALANCES",
                     member=interaction.user)
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 # Command to check personal balance
 @bot.tree.command(name="balance", description="Check your token balance")
 async def check_balance(interaction: discord.Interaction):
+    # Defer the response (use ephemeral for private response)
+    await interaction.response.defer(ephemeral=True)
+    
     # Load token data
     token_data = load_token_data()
     guild_id = str(interaction.guild_id)
@@ -437,26 +446,7 @@ async def check_balance(interaction: discord.Interaction):
                     "CHECK_PERSONAL_BALANCE",
                     member=interaction.user)
 
-    await interaction.response.send_message(
-        f"You currently have {tokens} callout token(s).", ephemeral=True)
-
-# Command to view the transaction log (Admin only)
-@bot.tree.command(name="log",
-                  description="View recent token transactions (Admin only)")
-@app_commands.describe(entries="Number of log entries to show (default: 10)")
-async def view_log(interaction: discord.Interaction, entries: int = 10):
-    if not is_admin(interaction.user):
-        await interaction.response.send_message(
-            "❌ Only admins can use this command.", ephemeral=True)
-        return
-
-    # Cap entries to avoid message limits
-    entries = min(entries, 25)
-
-    if not os.path.exists(LOG_FILE):
-        await interaction.response.send_message("No transaction logs found.",
-                                                ephemeral=True)
-        return
+    await interaction.followup.send(f"You currently have {tokens} callout token(s).")
 
     # Get recent log entries
     with open(LOG_FILE, 'r') as f:
@@ -537,45 +527,49 @@ async def remove_tokens(interaction: discord.Interaction,
 @bot.tree.command(name="bank-help",
                   description="List all available token bank commands")
 async def bank_help_command(interaction: discord.Interaction):
+    # Defer the response first
+    await interaction.response.defer(ephemeral=False)
+    
     commands_list = bot.tree.get_commands()
-
+    
     # Create an embed for commands
     embed = discord.Embed(
         title="🏦 Token Bank Commands",
         description="Here are all the commands for the token bank system:",
         color=discord.Color.blue())
-
+    
     # Sort commands by name
     commands_list = sorted(commands_list, key=lambda x: x.name)
-
+    
     # Add regular user commands
     user_commands = []
     admin_commands = []
-
+    
     for cmd in commands_list:
         # Filter to only include token-related commands
         if cmd.name in ["balance", "balances", "deposit", "bank-help"]:
             user_commands.append(f"• `/{cmd.name}` - {cmd.description}")
         elif cmd.name in ["give_tokens", "remove_tokens", "log", "create_backup", "list_backups", "restore_backup", "confirm_restore"]:
             admin_commands.append(f"• `/{cmd.name}` - {cmd.description}")
-
+    
     # Add sections to embed
     if user_commands:
         embed.add_field(name="User Commands",
                         value="\n".join(user_commands),
                         inline=False)
-
+    
     if admin_commands and is_admin(interaction.user):
         embed.add_field(name="Admin Commands",
                         value="\n".join(admin_commands),
                         inline=False)
-
+    
     # Log command usage
     log_transaction(interaction.guild.name,
                     "BANK_HELP_COMMAND",
                     member=interaction.user)
-
-    await interaction.response.send_message(embed=embed)
+    
+    # Use followup instead of response
+    await interaction.followup.send(embed=embed)
 
 # Start the Flask server in a background thread
 if __name__ == "__main__":
