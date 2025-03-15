@@ -3,9 +3,224 @@ from discord.ext import commands
 import json
 import os
 import datetime
+import shutil
 from discord import app_commands
-from threading import Thread
-from flask import Flask
+import asyncio
+
+# Backup configuration
+BACKUP_DIR = 'backups'
+MAX_BACKUPS = 5  # Maximum number of backups to keep
+BACKUP_INTERVAL = 24 * 60 * 60  # 24 hours in seconds
+
+# Ensure backup directory exists
+if not os.path.exists(BACKUP_DIR):
+    os.makedirs(BACKUP_DIR)
+
+# Backup token data
+async def backup_token_data():
+    # Create timestamp for filename
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"{BACKUP_DIR}/token_data_backup_{timestamp}.json"
+    
+    try:
+        # Check if original file exists
+        if os.path.exists(TOKEN_FILE):
+            # Copy the file
+            shutil.copy2(TOKEN_FILE, backup_filename)
+            
+            # Log the backup
+            log_transaction("SYSTEM", "AUTO_BACKUP", amount=timestamp)
+            print(f"[{timestamp}] Created backup: {backup_filename}")
+            
+            # Clean up old backups if we have too many
+            cleanup_old_backups()
+            return True
+        else:
+            print(f"[{timestamp}] Backup failed: Token file does not exist")
+            return False
+    except Exception as e:
+        print(f"[{timestamp}] Backup failed: {str(e)}")
+        return False
+
+# Clean up old backups
+def cleanup_old_backups():
+    try:
+        # List all backup files and sort by creation time
+        backup_files = [f for f in os.listdir(BACKUP_DIR) if f.startswith("token_data_backup_")]
+        backup_files.sort(key=lambda x: os.path.getctime(os.path.join(BACKUP_DIR, x)), reverse=True)
+        
+        # Remove excess backups
+        for old_file in backup_files[MAX_BACKUPS:]:
+            os.remove(os.path.join(BACKUP_DIR, old_file))
+            print(f"Removed old backup: {old_file}")
+    except Exception as e:
+        print(f"Error cleaning up old backups: {str(e)}")
+
+# Restore token data from backup
+def restore_token_data(backup_filename):
+    try:
+        # Check if backup file exists
+        if os.path.exists(backup_filename):
+            # Create a backup of current file before restore
+            if os.path.exists(TOKEN_FILE):
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                temp_backup = f"{BACKUP_DIR}/pre_restore_backup_{timestamp}.json"
+                shutil.copy2(TOKEN_FILE, temp_backup)
+            
+            # Copy backup to main token file
+            shutil.copy2(backup_filename, TOKEN_FILE)
+            return True
+        else:
+            return False
+    except Exception as e:
+        print(f"Restore failed: {str(e)}")
+        return False
+
+# List available backups
+def list_available_backups():
+    try:
+        backup_files = [f for f in os.listdir(BACKUP_DIR) if f.startswith("token_data_backup_")]
+        backup_files.sort(key=lambda x: os.path.getctime(os.path.join(BACKUP_DIR, x)), reverse=True)
+        return backup_files
+    except Exception as e:
+        print(f"Error listing backups: {str(e)}")
+        return []
+
+# Automatic backup task
+async def automatic_backup_task():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await backup_token_data()
+        await asyncio.sleep(BACKUP_INTERVAL)  # Wait for the interval period
+
+# Add to your bot startup
+@bot.event
+async def on_ready():
+    print(f'Bot is online as {bot.user.name}')
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} command(s)")
+        
+        # Start automatic backup task
+        bot.loop.create_task(automatic_backup_task())
+        print("Automatic backup system initialized")
+    except Exception as e:
+        print(f"Failed to sync commands: {e}")
+
+# Command to manually create a backup (Admin only)
+@bot.tree.command(name="create_backup", description="Manually create a backup of token data (Admin only)")
+async def create_backup(interaction: discord.Interaction):
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+        return
+    
+    # Execute backup
+    success = await backup_token_data()
+    
+    if success:
+        # Log transaction
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_transaction(interaction.guild.name, "MANUAL_BACKUP", interaction.user)
+        
+        await interaction.response.send_message(f"✅ Backup created successfully at {timestamp}", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Failed to create backup. Check server logs for details.", ephemeral=True)
+
+# Command to list available backups (Admin only)
+@bot.tree.command(name="list_backups", description="List available token data backups (Admin only)")
+async def list_backups(interaction: discord.Interaction):
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+        return
+    
+    backups = list_available_backups()
+    
+    if not backups:
+        await interaction.response.send_message("No backups available.", ephemeral=True)
+        return
+    
+    # Create an embed for backups
+    embed = discord.Embed(
+        title="Available Backups",
+        description="Use `/restore_backup filename` to restore a specific backup.",
+        color=discord.Color.blue()
+    )
+    
+    for i, backup in enumerate(backups):
+        # Get file creation time
+        backup_path = os.path.join(BACKUP_DIR, backup)
+        creation_time = datetime.datetime.fromtimestamp(os.path.getctime(backup_path))
+        formatted_time = creation_time.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Get file size
+        size_kb = os.path.getsize(backup_path) / 1024
+        
+        embed.add_field(
+            name=f"{i+1}. {backup}",
+            value=f"Created: {formatted_time}\nSize: {size_kb:.2f} KB",
+            inline=False
+        )
+    
+    # Log transaction
+    log_transaction(interaction.guild.name, "LIST_BACKUPS", interaction.user)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# Command to restore from backup (Admin only)
+@bot.tree.command(name="restore_backup", description="Restore token data from a backup (Admin only)")
+@app_commands.describe(backup_number="Backup number from list_backups command")
+async def restore_backup(interaction: discord.Interaction, backup_number: int):
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+        return
+    
+    backups = list_available_backups()
+    
+    if not backups:
+        await interaction.response.send_message("No backups available to restore.", ephemeral=True)
+        return
+    
+    if backup_number < 1 or backup_number > len(backups):
+        await interaction.response.send_message(f"❌ Invalid backup number. Please use a number between 1 and {len(backups)}.", ephemeral=True)
+        return
+    
+    # Get the backup file path
+    backup_filename = os.path.join(BACKUP_DIR, backups[backup_number-1])
+    
+    # Confirm restoration
+    await interaction.response.send_message(
+        f"⚠️ Are you sure you want to restore from backup: {backups[backup_number-1]}?\n"
+        f"This will overwrite the current token data. Type `/confirm_restore {backup_number}` to proceed.",
+        ephemeral=True
+    )
+
+# Command to confirm restoration (Admin only)
+@bot.tree.command(name="confirm_restore", description="Confirm restoration from backup (Admin only)")
+@app_commands.describe(backup_number="Backup number to confirm restoration")
+async def confirm_restore(interaction: discord.Interaction, backup_number: int):
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+        return
+    
+    backups = list_available_backups()
+    
+    if backup_number < 1 or backup_number > len(backups):
+        await interaction.response.send_message(f"❌ Invalid backup number. Please use a number between 1 and {len(backups)}.", ephemeral=True)
+        return
+    
+    # Get the backup file path
+    backup_filename = os.path.join(BACKUP_DIR, backups[backup_number-1])
+    
+    # Perform the restore
+    success = restore_token_data(backup_filename)
+    
+    if success:
+        # Log transaction
+        log_transaction(interaction.guild.name, "RESTORE_BACKUP", interaction.user, amount=backups[backup_number-1])
+        
+        await interaction.response.send_message(f"✅ Successfully restored token data from backup: {backups[backup_number-1]}", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Failed to restore from backup. Check server logs for details.", ephemeral=True)
 
 # Add a Flask web server
 app = Flask(__name__)
@@ -362,7 +577,7 @@ async def bank_help_command(interaction: discord.Interaction):
         # Filter to only include token-related commands
         if cmd.name in ["balance", "balances", "deposit", "bank-help"]:
             user_commands.append(f"• `/{cmd.name}` - {cmd.description}")
-        elif cmd.name in ["give_tokens", "remove_tokens", "log"]:
+        elif cmd.name in ["give_tokens", "remove_tokens", "log", "create_backup", "list_backups", "restore_backup", "confirm_restore"]:
             admin_commands.append(f"• `/{cmd.name}` - {cmd.description}")
 
     # Add sections to embed
