@@ -8,6 +8,7 @@ from discord import app_commands
 import asyncio
 from flask import Flask
 from threading import Thread
+import aiohttp
 
 # Backup configuration
 BACKUP_DIR = 'backups'
@@ -166,6 +167,20 @@ def run_server():
         app.run(host='0.0.0.0', port=port)
     except Exception as e:
         print(f"Web server error: {str(e)}")
+# Keep the application alive by pinging it regularly
+async def keep_alive():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            # Get your app URL from environment variable or use a default one
+            app_url = os.environ.get("APP_URL", "https://discord-bot-app-7ibw.onrender.com")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{app_url}/") as resp:
+                    if resp.status == 200:
+                        print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Kept app alive with ping")
+        except Exception as e:
+            print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Failed to ping: {e}")
+        await asyncio.sleep(2 * 60)  # Ping every 2 minutes
 
 @bot.event
 async def on_ready():
@@ -177,6 +192,10 @@ async def on_ready():
         # Start automatic backup task
         bot.loop.create_task(automatic_backup_task())
         print("Automatic backup system initialized")
+        
+        # Add the keep alive task
+        bot.loop.create_task(keep_alive())
+        print("Keep alive system initialized")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
