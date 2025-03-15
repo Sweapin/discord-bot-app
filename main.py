@@ -4,7 +4,26 @@ import json
 import os
 import datetime
 from discord import app_commands
+from threading import Thread
+from flask import Flask
 
+# Add a Flask web server
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Discord bot is running!"
+
+def run_server():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+# Start the Flask server in a background thread
+server_thread = Thread(target=run_server)
+server_thread.daemon = True
+server_thread.start()
+
+# Rest of your bot code remains the same...
 # Bot configuration
 TOKEN = os.environ.get('BOT_TOKEN')
 TOKEN_FILE = 'token_data.json'
