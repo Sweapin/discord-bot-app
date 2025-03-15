@@ -471,14 +471,15 @@ async def check_balance(interaction: discord.Interaction):
                        amount="Number of tokens to remove")
 async def remove_tokens(interaction: discord.Interaction,
                         member: discord.Member, amount: int):
+    # Defer the response first
+    await interaction.response.defer(ephemeral=False)
+    
     if not is_admin(interaction.user):
-        await interaction.response.send_message(
-            "❌ Only admins can use this command.", ephemeral=True)
+        await interaction.followup.send("❌ Only admins can use this command.")
         return
 
     if amount <= 0:
-        await interaction.response.send_message(
-            "❌ Amount must be a positive number.", ephemeral=True)
+        await interaction.followup.send("❌ Amount must be a positive number.")
         return
 
     # Load token data
@@ -488,19 +489,36 @@ async def remove_tokens(interaction: discord.Interaction,
 
     # Check if user has any tokens
     if guild_id not in token_data or user_id not in token_data[guild_id]:
-        await interaction.response.send_message(
-            f"❌ {member.mention} doesn't have any tokens to remove.",
-            ephemeral=True)
+        await interaction.followup.send(f"❌ {member.mention} doesn't have any tokens to remove.")
         return
 
     current_tokens = token_data[guild_id][user_id]
 
     # Check if user has enough tokens
     if current_tokens < amount:
-        await interaction.response.send_message(
-            f"❌ {member.mention} only has {current_tokens} token(s), but you're trying to remove {amount}.",
-            ephemeral=True)
+        await interaction.followup.send(
+            f"❌ {member.mention} only has {current_tokens} token(s), but you're trying to remove {amount}.")
         return
+
+    # Update token count
+    token_data[guild_id][user_id] -= amount
+
+    # Remove user from data if they have 0 tokens
+    if token_data[guild_id][user_id] == 0:
+        del token_data[guild_id][user_id]
+        remaining = 0
+    else:
+        remaining = token_data[guild_id][user_id]
+
+    # Save token data
+    save_token_data(token_data)
+
+    # Log transaction
+    log_transaction(interaction.guild.name, "REMOVE_TOKENS", interaction.user,
+                    member, amount)
+
+    await interaction.followup.send(
+        f"✅ Successfully removed {amount} token(s) from {member.mention}. They now have {remaining} token(s) remaining.")
 
     # Update token count
     token_data[guild_id][user_id] -= amount
