@@ -652,11 +652,6 @@ async def view_stats(interaction: discord.Interaction):
                   description="List all available token bank commands")
 async def bank_help_command(interaction: discord.Interaction):
     # Defer the response first
-    await interaction.response.defer(ephemeral=False)# Command to list all available bank commands
-@bot.tree.command(name="bank-help",
-                  description="List all available token bank commands")
-async def bank_help_command(interaction: discord.Interaction):
-    # Defer the response first
     await interaction.response.defer(ephemeral=False)
     
     commands_list = bot.tree.get_commands()
