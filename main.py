@@ -10,10 +10,12 @@ from flask import Flask
 from threading import Thread
 import aiohttp
 
-# Backup configuration
+# Global configuration
+MAX_TOKENS_PER_USER = 3  # Maximum number of tokens a user can have
 BACKUP_DIR = 'backups'
 MAX_BACKUPS = 5  # Maximum number of backups to keep
 BACKUP_INTERVAL = 24 * 60 * 60  # 24 hours in seconds
+DEFAULT_LOG_ENTRIES = 10  # Default number of log entries to show
 
 # Bot configuration
 TOKEN = os.environ.get('BOT_TOKEN')
@@ -34,56 +36,94 @@ if not os.path.exists(BACKUP_DIR):
 
 # Load token data
 def load_token_data():
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, 'r') as f:
-            return json.load(f)
-    return {}
+    try:
+        if os.path.exists(TOKEN_FILE):
+            with open(TOKEN_FILE, 'r') as f:
+                return json.load(f)
+        return {}
+    except Exception as e:
+        print(f"Error loading token data: {str(e)}")
+        return {}
 
 # Save token data
 def save_token_data(data):
-    with open(TOKEN_FILE, 'w') as f:
-        json.dump(data, f)
+    try:
+        with open(TOKEN_FILE, 'w') as f:
+            json.dump(data, f)
+        return True
+    except Exception as e:
+        print(f"Error saving token data: {str(e)}")
+        return False
 
 # Log transaction
 def log_transaction(guild_name, action, admin=None, member=None, amount=None):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_entry = f"[{timestamp}] [{guild_name}] {action}"
+    try:
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"[{timestamp}] [{guild_name}] {action}"
 
-    if admin:
-        try:
-            log_entry += f" | Admin: {admin.name}"
-            if hasattr(admin, 'discriminator') and admin.discriminator != '0':
-                log_entry += f"#{admin.discriminator}"
-        except AttributeError:
-            log_entry += f" | Admin: {admin}"
+        if admin:
+            try:
+                log_entry += f" | Admin: {admin.name}"
+                if hasattr(admin, 'discriminator') and admin.discriminator != '0':
+                    log_entry += f"#{admin.discriminator}"
+            except AttributeError:
+                log_entry += f" | Admin: {admin}"
+                
+        if member:
+            try:
+                log_entry += f" | Member: {member.name}"
+                if hasattr(member, 'discriminator') and member.discriminator != '0':
+                    log_entry += f"#{member.discriminator}"
+            except AttributeError:
+                log_entry += f" | Member: {member}"
+                
+        if amount is not None:
+            log_entry += f" | Amount: {amount}"
+
+        with open(LOG_FILE, 'a') as f:
+            f.write(log_entry + '\n')
+
+        return log_entry
+    except Exception as e:
+        print(f"Error logging transaction: {str(e)}")
+        return None
+
+# Get user transaction history
+def get_user_transactions(user_id, limit=10):
+    try:
+        if not os.path.exists(LOG_FILE):
+            return []
             
-    if member:
-        try:
-            log_entry += f" | Member: {member.name}"
-            if hasattr(member, 'discriminator') and member.discriminator != '0':
-                log_entry += f"#{member.discriminator}"
-        except AttributeError:
-            log_entry += f" | Member: {member}"
+        with open(LOG_FILE, 'r') as f:
+            log_lines = f.readlines()
             
-    if amount is not None:
-        log_entry += f" | Amount: {amount}"
-
-    with open(LOG_FILE, 'a') as f:
-        f.write(log_entry + '\n')
-
-    return log_entry
+        # Filter logs for this user
+        user_logs = []
+        for line in log_lines:
+            if f"Member: {user_id}" in line or f"Member: <@{user_id}>" in line:
+                user_logs.append(line.strip())
+                
+        # Return the most recent logs up to the limit
+        return user_logs[-limit:] if len(user_logs) > limit else user_logs
+    except Exception as e:
+        print(f"Error retrieving user transactions: {str(e)}")
+        return []
 
 # Check if user has admin role
 def is_admin(member):
-    return discord.utils.get(member.roles, name=ADMIN_ROLE_NAME) is not None
+    try:
+        return discord.utils.get(member.roles, name=ADMIN_ROLE_NAME) is not None
+    except Exception as e:
+        print(f"Error checking admin status: {str(e)}")
+        return False
 
 # Backup token data
 async def backup_token_data():
-    # Create timestamp for filename
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_filename = f"{BACKUP_DIR}/token_data_backup_{timestamp}.json"
-    
     try:
+        # Create timestamp for filename
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"{BACKUP_DIR}/token_data_backup_{timestamp}.json"
+        
         # Check if original file exists
         if os.path.exists(TOKEN_FILE):
             # Copy the file
@@ -167,6 +207,7 @@ def run_server():
         app.run(host='0.0.0.0', port=port)
     except Exception as e:
         print(f"Web server error: {str(e)}")
+
 # Keep the application alive by pinging it regularly
 async def keep_alive():
     await bot.wait_until_ready()
@@ -343,6 +384,15 @@ async def give_tokens(interaction: discord.Interaction, member: discord.Member,
 
     # Update token count
     current_tokens = token_data[guild_id].get(user_id, 0)
+    
+    # Check if adding tokens would exceed the maximum
+    if current_tokens + amount > MAX_TOKENS_PER_USER:
+        await interaction.followup.send(
+            f"❌ Cannot give {amount} token(s) to {member.mention}. They already have {current_tokens} token(s) and the maximum allowed is {MAX_TOKENS_PER_USER}."
+        )
+        return
+
+    # Update token count
     token_data[guild_id][user_id] = current_tokens + amount
 
     # Save token data
@@ -361,6 +411,9 @@ async def give_tokens(interaction: discord.Interaction, member: discord.Member,
                   description="Deposit your tokens into the BO7 Bank")
 @app_commands.describe(amount="Number of tokens to deposit")
 async def deposit_tokens(interaction: discord.Interaction, amount: int):
+    # Defer the response
+    await interaction.response.defer(ephemeral=True)
+    
     # Load token data
     token_data = load_token_data()
     guild_id = str(interaction.guild_id)
@@ -369,13 +422,13 @@ async def deposit_tokens(interaction: discord.Interaction, amount: int):
     # Check if user has enough tokens
     if guild_id not in token_data or user_id not in token_data[
             guild_id] or token_data[guild_id][user_id] < amount:
-        await interaction.response.send_message(
-            "❌ You don't have enough tokens to deposit.", ephemeral=True)
+        await interaction.followup.send(
+            "❌ You don't have enough tokens to deposit.")
         return
 
     if amount <= 0:
-        await interaction.response.send_message(
-            "❌ You must deposit at least 1 token.", ephemeral=True)
+        await interaction.followup.send(
+            "❌ You must deposit at least 1 token.")
         return
 
     # Update token count
@@ -395,7 +448,7 @@ async def deposit_tokens(interaction: discord.Interaction, amount: int):
                     amount=amount)
 
     remaining = token_data[guild_id].get(user_id, 0)
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"🏦 You have deposited {amount} token(s) into the BO7 Bank. You have {remaining} token(s) remaining."
     )
 
@@ -467,20 +520,37 @@ async def check_balance(interaction: discord.Interaction):
 
     await interaction.followup.send(f"You currently have {tokens} callout token(s).")
 
+# Command to view transaction log (Admin only)
+@bot.tree.command(name="log", description="View recent token transactions (Admin only)")
+@app_commands.describe(entries="Number of log entries to show (default: 10)")
+async def view_log(interaction: discord.Interaction, entries: int = DEFAULT_LOG_ENTRIES):
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+        return
+
+    # Defer the response to prevent timeout
+    await interaction.response.defer(ephemeral=True)
+    
+    # Make sure entries is a positive number
+    if entries <= 0:
+        entries = DEFAULT_LOG_ENTRIES
+
     # Get recent log entries
-    with open(LOG_FILE, 'r') as f:
-        log_lines = f.readlines()
+    try:
+        with open(LOG_FILE, 'r') as f:
+            log_lines = f.readlines()
 
-    recent_logs = log_lines[-entries:] if len(
-        log_lines) >= entries else log_lines
+        recent_logs = log_lines[-entries:] if len(log_lines) >= entries else log_lines
 
-    # Format logs for Discord
-    log_content = "**Recent Token Transactions:**\n```"
-    for line in recent_logs:
-        log_content += line.strip() + "\n"
-    log_content += "```"
+        # Format logs for Discord
+        log_content = "**Recent Token Transactions:**\n```"
+        for line in recent_logs:
+            log_content += line.strip() + "\n"
+        log_content += "```"
 
-    await interaction.response.send_message(log_content, ephemeral=True)
+        await interaction.followup.send(log_content)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error reading log file: {str(e)}")
 
 # Command to remove tokens from a user (Admin only)
 @bot.tree.command(
@@ -539,28 +609,50 @@ async def remove_tokens(interaction: discord.Interaction,
     await interaction.followup.send(
         f"✅ Successfully removed {amount} token(s) from {member.mention}. They now have {remaining} token(s) remaining.")
 
-    # Update token count
-    token_data[guild_id][user_id] -= amount
 
-    # Remove user from data if they have 0 tokens
-    if token_data[guild_id][user_id] == 0:
-        del token_data[guild_id][user_id]
-        remaining = 0
-    else:
-        remaining = token_data[guild_id][user_id]
-
-    # Save token data
-    save_token_data(token_data)
-
-    # Log transaction
-    log_transaction(interaction.guild.name, "REMOVE_TOKENS", interaction.user,
-                    member, amount)
-
-    await interaction.response.send_message(
-        f"✅ Successfully removed {amount} token(s) from {member.mention}. They now have {remaining} token(s) remaining."
+# Command to view server token statistics (Admin only)
+@bot.tree.command(name="stats", description="View server token statistics (Admin only)")
+async def view_stats(interaction: discord.Interaction):
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+        return
+        
+    # Defer the response
+    await interaction.response.defer(ephemeral=True)
+    
+    # Load token data
+    token_data = load_token_data()
+    guild_id = str(interaction.guild_id)
+    
+    if guild_id not in token_data or not token_data[guild_id]:
+        await interaction.followup.send("No token data available for this server.")
+        return
+        
+    # Calculate statistics
+    total_tokens = sum(token_data[guild_id].values())
+    unique_users = len(token_data[guild_id])
+    max_tokens = max(token_data[guild_id].values()) if token_data[guild_id] else 0
+    avg_tokens = total_tokens / unique_users if unique_users > 0 else 0
+    
+    # Create embed
+    embed = discord.Embed(
+        title="🔢 Token Statistics",
+        color=discord.Color.blue()
     )
+    
+    embed.add_field(name="Total Tokens", value=str(total_tokens), inline=True)
+    embed.add_field(name="Unique Users", value=str(unique_users), inline=True)
+    embed.add_field(name="Maximum Tokens", value=str(max_tokens), inline=True)
+    embed.add_field(name="Average Tokens", value=f"{avg_tokens:.2f}", inline=True)
+    
+    await interaction.followup.send(embed=embed)
 
 # Command to list all available bank commands
+@bot.tree.command(name="bank-help",
+                  description="List all available token bank commands")
+async def bank_help_command(interaction: discord.Interaction):
+    # Defer the response first
+    await interaction.response.defer(ephemeral=False)# Command to list all available bank commands
 @bot.tree.command(name="bank-help",
                   description="List all available token bank commands")
 async def bank_help_command(interaction: discord.Interaction):
@@ -584,9 +676,9 @@ async def bank_help_command(interaction: discord.Interaction):
     
     for cmd in commands_list:
         # Filter to only include token-related commands
-        if cmd.name in ["balance", "balances", "deposit", "bank-help"]:
+        if cmd.name in ["balance", "balances", "deposit", "bank-help", "history"]:
             user_commands.append(f"• `/{cmd.name}` - {cmd.description}")
-        elif cmd.name in ["give_tokens", "remove_tokens", "log", "create_backup", "list_backups", "restore_backup", "confirm_restore"]:
+        elif cmd.name in ["give_tokens", "remove_tokens", "log", "create_backup", "list_backups", "restore_backup", "confirm_restore", "stats"]:
             admin_commands.append(f"• `/{cmd.name}` - {cmd.description}")
     
     # Add sections to embed
@@ -609,10 +701,18 @@ async def bank_help_command(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 # Start the Flask server in a background thread
-if __name__ == "__main__":
+def start_server():
     server_thread = Thread(target=run_server)
     server_thread.daemon = True
     server_thread.start()
+
+# Main function to start the bot
+if __name__ == "__main__":
+    # Start the web server
+    start_server()
     
     # Run the bot
-    bot.run(TOKEN)
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        print(f"Error starting bot: {str(e)}")
