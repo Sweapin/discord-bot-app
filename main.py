@@ -645,7 +645,7 @@ async def view_stats(interaction: discord.Interaction):
     
     await interaction.followup.send(embed=embed)
 
-# Command to reset all tokens (Admin only)
+
 # Command to reset all tokens (Admin only)
 @bot.tree.command(name="reset_all_tokens", description="Remove all tokens from all members (Admin only)")
 async def reset_all_tokens(interaction: discord.Interaction):
