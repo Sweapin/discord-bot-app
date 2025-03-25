@@ -646,14 +646,15 @@ async def view_stats(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 # Command to reset all tokens (Admin only)
+# Command to reset all tokens (Admin only)
 @bot.tree.command(name="reset_all_tokens", description="Remove all tokens from all members (Admin only)")
 async def reset_all_tokens(interaction: discord.Interaction):
     # Defer the response
-    await interaction.response.defer(ephemeral=False)
+    await interaction.response.defer(ephemeral=True)  # Changed to ephemeral for admin action
     
     # Check if user is an admin
     if not is_admin(interaction.user):
-        await interaction.followup.send("❌ Only admins can use this command.")
+        await interaction.followup.send("❌ Only admins can use this command.", ephemeral=True)
         return
 
     # Load token data
@@ -662,7 +663,7 @@ async def reset_all_tokens(interaction: discord.Interaction):
 
     # Check if there are any tokens to reset
     if guild_id not in token_data or not token_data[guild_id]:
-        await interaction.followup.send("No tokens to reset.")
+        await interaction.followup.send("No tokens to reset.", ephemeral=True)
         return
 
     # Count total tokens before reset
@@ -685,7 +686,8 @@ async def reset_all_tokens(interaction: discord.Interaction):
     await interaction.followup.send(
         f"✅ All tokens have been reset. \n"
         f"Total tokens removed: {total_tokens}\n"
-        f"Number of users affected: {unique_users}"
+        f"Number of users affected: {unique_users}", 
+        ephemeral=True
     )
 
 # Command to list all available bank commands
@@ -712,9 +714,9 @@ async def bank_help_command(interaction: discord.Interaction):
     
     for cmd in commands_list:
         # Filter to include all commands
-        if cmd.name in ["balance", "balances", "deposit", "bank-help", "reset_all_tokens"]:
+        if cmd.name in ["balance", "balances", "deposit", "bank-help",]:
             user_commands.append(f"• `/{cmd.name}` - {cmd.description}")
-        elif cmd.name in ["give_tokens", "remove_tokens", "log", "create_backup", "list_backups", "restore_backup", "confirm_restore", "stats"]:
+        elif cmd.name in ["give_tokens", "remove_tokens", "reset_all_tokens", "log", "create_backup", "list_backups", "restore_backup", "confirm_restore", "stats"]:
             admin_commands.append(f"• `/{cmd.name}` - {cmd.description}")
     
     # Add sections to embed
