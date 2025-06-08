@@ -117,6 +117,79 @@ def is_admin(member):
         print(f"Error checking admin status: {str(e)}")
         return False
 
+# Function to calculate total tokens given to a user from transaction log
+def get_user_token_summary(guild_name, user_id, username=None):
+    """
+    Calculate total tokens given to a user by analyzing the transaction log
+    Returns: (total_given, total_deposited, current_balance, net_tokens, total_removed)
+    """
+    try:
+        if not os.path.exists(LOG_FILE):
+            return 0, 0, 0, 0, 0
+            
+        with open(LOG_FILE, 'r') as f:
+            log_lines = f.readlines()
+        
+        total_given = 0
+        total_deposited = 0
+        total_removed = 0
+        
+        # Search patterns for the user
+        search_patterns = []
+        if username:
+            search_patterns.extend([
+                f"Member: {username}#",
+                f"Member: {username}",
+                f"Member: <@{user_id}>"
+            ])
+        search_patterns.append(f"Member: {user_id}")
+        
+        for line in log_lines:
+            # Only check logs from the correct guild
+            if f"[{guild_name}]" not in line:
+                continue
+                
+            # Check if this line mentions our user
+            user_mentioned = any(pattern in line for pattern in search_patterns)
+            if not user_mentioned:
+                continue
+            
+            # Parse the amount from the log entry
+            amount = 0
+            if "| Amount: " in line:
+                try:
+                    amount_str = line.split("| Amount: ")[1].strip()
+                    # Handle cases where amount might have extra text
+                    amount = int(amount_str.split()[0])
+                except (ValueError, IndexError):
+                    amount = 0
+            
+            # Categorize the transaction type
+            if "GIVE_TOKENS" in line:
+                total_given += amount
+            elif "DEPOSIT_TOKENS" in line:
+                total_deposited += amount
+            elif "REMOVE_TOKENS" in line:
+                total_removed += amount
+        
+        # Get current balance
+        token_data = load_token_data()
+        guild_id = str(guild_name)  # We'll need to find the actual guild_id
+        current_balance = 0
+        
+        # Find the user's current balance in any guild data
+        for gid, guild_data in token_data.items():
+            if str(user_id) in guild_data:
+                current_balance = guild_data[str(user_id)]
+                break
+        
+        net_tokens = total_given - total_removed
+        
+        return total_given, total_deposited, current_balance, net_tokens, total_removed
+        
+    except Exception as e:
+        print(f"Error calculating user token summary: {str(e)}")
+        return 0, 0, 0, 0, 0
 # Backup token data
 async def backup_token_data():
     try:
@@ -239,6 +312,35 @@ async def on_ready():
         print("Keep alive system initialized")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
+
+
+@bot.event
+async def on_member_remove(member):
+    """Automatically remove tokens when a member leaves the server"""
+    try:
+        # Load token data
+        token_data = load_token_data()
+        guild_id = str(member.guild.id)
+        user_id = str(member.id)
+        
+        # Check if user had tokens
+        if guild_id in token_data and user_id in token_data[guild_id]:
+            removed_tokens = token_data[guild_id][user_id]
+            del token_data[guild_id][user_id]
+            
+            # Save the updated data
+            save_token_data(token_data)
+            
+            # Log the automatic removal
+            log_transaction(member.guild.name, 
+                          "AUTO_REMOVE_LEFT_MEMBER", 
+                          member=member, 
+                          amount=removed_tokens)
+            
+            print(f"Automatically removed {removed_tokens} tokens from {member.name} who left {member.guild.name}")
+            
+    except Exception as e:
+        print(f"Error in on_member_remove: {str(e)}")
 
 # Command to manually create a backup (Admin only)
 @bot.tree.command(name="create_backup", description="Manually create a backup of token data (Admin only)")
@@ -463,31 +565,61 @@ async def check_balances(interaction: discord.Interaction):
     guild_id = str(interaction.guild_id)
 
     if guild_id not in token_data or not token_data[guild_id]:
-        await interaction.followup.send("No one has any tokens at the moment.")
+        # Create a nice "empty" embed
+        embed = discord.Embed(
+            title="💰 Token Balances",
+            description="*No one has any tokens at the moment.*",
+            color=discord.Color.from_rgb(70, 130, 180))  # Steel blue color
+        embed.set_footer(text="Use /give_tokens to distribute tokens to members!")
+        await interaction.followup.send(embed=embed)
         return
 
-    # Create an embed for token balances
+    # Create a beautiful embed for token balances
     embed = discord.Embed(
-        title="🪙 Token Balances",
-        description="Current callout token balances for all members:",
-        color=discord.Color.gold())
+        title="💰 Token Balances",
+        description="*Current token holders in the server*",
+        color=discord.Color.from_rgb(70, 130, 180))  # Steel blue color
 
-    # Get all members with tokens
+    # Get all members with tokens (sorted alphabetically for fairness)
     sorted_users = sorted(token_data[guild_id].items(),
-                          key=lambda x: x[1],
-                          reverse=True)
+                          key=lambda x: x[0])  # Sort by user ID (neutral)
 
+    # Create the member list
+    member_list = ""
+    total_tokens = 0
+    active_holders = 0
+    
     for user_id, tokens in sorted_users:
         try:
             member = await interaction.guild.fetch_member(int(user_id))
-            embed.add_field(name=member.display_name,
-                            value=f"{tokens} token(s)",
-                            inline=True)
-        except:
-            # User might have left the server
-            embed.add_field(name=f"Unknown User ({user_id})",
-                            value=f"{tokens} token(s)",
-                            inline=True)
+            
+            # Visual token display with coins (max 3)
+            token_coins = "🪙" * tokens
+            
+            # Add member to the list
+            member_list += f"**{member.display_name}**\n"
+            member_list += f"   {token_coins} `{tokens} token{'s' if tokens != 1 else ''}`\n\n"
+            
+            total_tokens += tokens
+            active_holders += 1
+            
+        except discord.NotFound:
+            # User has left the server - show as unknown
+            token_coins = "🪙" * tokens
+            member_list += f"*Unknown User*\n"
+            member_list += f"   {token_coins} `{tokens} token{'s' if tokens != 1 else ''}`\n\n"
+            total_tokens += tokens
+            active_holders += 1
+
+    # Add the member list to embed
+    if member_list:
+        embed.add_field(name="Token Holders", value=member_list, inline=False)
+    
+    # Add footer with simple statistics
+    embed.set_footer(text=f"💎 {total_tokens} total tokens • 👥 {active_holders} holders")
+    
+    # Add timestamp
+    embed.timestamp = discord.utils.utcnow()
 
     # Log transaction
     log_transaction(interaction.guild.name,
@@ -495,6 +627,109 @@ async def check_balances(interaction: discord.Interaction):
                     member=interaction.user)
 
     await interaction.followup.send(embed=embed)
+
+   # Admin command to check user's total token history
+@bot.tree.command(name="user_tokens", 
+                  description="Check a user's complete token history (Admin only)")
+@app_commands.describe(member="The member to check token history for")
+async def check_user_tokens(interaction: discord.Interaction, member: discord.Member):
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    # Get user's token summary
+    total_given, total_deposited, current_balance, net_tokens, total_removed = get_user_token_summary(
+        interaction.guild.name, 
+        member.id, 
+        member.name
+    )
+    
+    # Create a detailed embed
+    embed = discord.Embed(
+        title=f"📊 Token History: {member.display_name}",
+        description="*Complete token transaction summary*",
+        color=discord.Color.from_rgb(100, 149, 237))  # Cornflower blue
+    
+    # Add user avatar
+    embed.set_thumbnail(url=member.display_avatar.url)
+    
+    # Token statistics
+    embed.add_field(
+        name="🎁 Total Tokens Given",
+        value=f"**{total_given}** tokens",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="🏦 Total Deposited",
+        value=f"**{total_deposited}** tokens",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="🪙 Current Balance",
+        value=f"**{current_balance}** tokens",
+        inline=True
+    )
+    
+    if total_removed > 0:
+        embed.add_field(
+            name="❌ Tokens Removed",
+            value=f"**{total_removed}** tokens",
+            inline=True
+        )
+    
+    # Calculate lifetime value
+    lifetime_tokens = total_given - total_removed
+    embed.add_field(
+        name="💎 Net Lifetime Tokens",
+        value=f"**{lifetime_tokens}** tokens",
+        inline=True
+    )
+    
+    # Usage calculation
+    if lifetime_tokens > 0:
+        usage_percentage = (total_deposited / lifetime_tokens) * 100
+        embed.add_field(
+            name="📈 Usage Rate",
+            value=f"**{usage_percentage:.1f}%** deposited",
+            inline=True
+        )
+    
+    # Add a summary section
+    if total_given > 0:
+        summary_text = f"• Received **{total_given}** tokens from admins\n"
+        if total_deposited > 0:
+            summary_text += f"• Deposited **{total_deposited}** tokens to bank\n"
+        if total_removed > 0:
+            summary_text += f"• Had **{total_removed}** tokens removed\n"
+        summary_text += f"• Currently holds **{current_balance}** tokens"
+        
+        embed.add_field(
+            name="📋 Summary",
+            value=summary_text,
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="📋 Summary",
+            value="*This user has never received any tokens.*",
+            inline=False
+        )
+    
+    # Add footer with user info
+    embed.set_footer(text=f"User ID: {member.id} • Joined: {member.joined_at.strftime('%Y-%m-%d')}")
+    embed.timestamp = discord.utils.utcnow()
+    
+    # Log this admin action
+    log_transaction(interaction.guild.name, 
+                   "ADMIN_CHECK_USER_TOKENS", 
+                   admin=interaction.user, 
+                   member=member)
+    
+    await interaction.followup.send(embed=embed) 
 
 # Command to check personal balance
 @bot.tree.command(name="balance", description="Check your token balance")
@@ -698,6 +933,8 @@ async def bank_help_command(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=False)
     
     commands_list = bot.tree.get_commands()
+
+    
     
     # Create an embed for commands
     embed = discord.Embed(
@@ -716,7 +953,7 @@ async def bank_help_command(interaction: discord.Interaction):
         # Filter to include all commands
         if cmd.name in ["balance", "balances", "deposit", "bank-help",]:
             user_commands.append(f"• `/{cmd.name}` - {cmd.description}")
-        elif cmd.name in ["give_tokens", "remove_tokens", "reset_all_tokens", "log", "create_backup", "list_backups", "restore_backup", "confirm_restore", "stats"]:
+        elif cmd.name in ["give_tokens", "remove_tokens", "reset_all_tokens", "log", "create_backup", "list_backups", "restore_backup", "confirm_restore", "stats", "user_tokens"]:
             admin_commands.append(f"• `/{cmd.name}` - {cmd.description}")
     
     # Add sections to embed
