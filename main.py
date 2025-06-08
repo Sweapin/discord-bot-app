@@ -164,17 +164,20 @@ def get_user_token_summary(guild_name, user_id, username=None):
                 except (ValueError, IndexError):
                     amount = 0
             
-            # Categorize the transaction type
+            # Kategorisera transaktionstypen med ny logik
             if "GIVE_TOKENS" in line:
                 total_given += amount
             elif "DEPOSIT_TOKENS" in line:
                 total_deposited += amount
             elif "REMOVE_TOKENS" in line:
-                total_removed += amount
+                # NYTT: När tokens tas bort, minska från total_given istället för att räkna separat
+                total_given -= amount
+                # Säkerställ att total_given inte blir negativt
+                if total_given < 0:
+                    total_given = 0
         
         # Get current balance
         token_data = load_token_data()
-        guild_id = str(guild_name)  # We'll need to find the actual guild_id
         current_balance = 0
         
         # Find the user's current balance in any guild data
@@ -183,13 +186,15 @@ def get_user_token_summary(guild_name, user_id, username=None):
                 current_balance = guild_data[str(user_id)]
                 break
         
-        net_tokens = total_given - total_removed
+        # Net tokens är nu bara total_given eftersom removed redan räknats bort
+        net_tokens = total_given
         
-        return total_given, total_deposited, current_balance, net_tokens, total_removed
+        return total_given, total_deposited, current_balance, net_tokens, 0  # total_removed är nu alltid 0
         
     except Exception as e:
         print(f"Error calculating user token summary: {str(e)}")
         return 0, 0, 0, 0, 0
+
 # Backup token data
 async def backup_token_data():
     try:
@@ -457,6 +462,47 @@ async def confirm_restore(interaction: discord.Interaction, backup_number: int):
     else:
         await interaction.response.send_message("❌ Failed to restore from backup. Check server logs for details.", ephemeral=True)
 
+# Nytt kommando för att kolla andra användares balans
+@bot.tree.command(name="check_user_balance", description="Check another user's token balance")
+@app_commands.describe(member="The member to check balance for")
+async def check_user_balance(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.defer(ephemeral=False)
+    
+    # Load token data
+    token_data = load_token_data()
+    guild_id = str(interaction.guild_id)
+    user_id = str(member.id)
+
+    # Get token count
+    tokens = 0
+    if guild_id in token_data and user_id in token_data[guild_id]:
+        tokens = token_data[guild_id][user_id]
+
+    # Create a nice embed for checking other users
+    embed = discord.Embed(
+        title=f"💰 Token Balance",
+        description=f"**{member.display_name}** currently has **{tokens}** callout token(s).",
+        color=discord.Color.from_rgb(70, 130, 180)
+    )
+    
+    # Add user avatar
+    embed.set_thumbnail(url=member.display_avatar.url)
+    
+    # Visual representation
+    if tokens > 0:
+        token_coins = "🪙" * min(tokens, 3)  # Max 3 coins visually
+        embed.add_field(name="Tokens", value=token_coins, inline=False)
+    else:
+        embed.add_field(name="Status", value="No tokens", inline=False)
+    
+    embed.set_footer(text=f"Checked by {interaction.user.display_name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    # Log transaction
+    log_transaction(interaction.guild.name, "CHECK_USER_BALANCE", 
+                   admin=interaction.user, member=member)
+
+    await interaction.followup.send(embed=embed)
 # Command to give tokens to a user (Admin only)
 @bot.tree.command(name="give_tokens",
                   description="Give callout tokens to a member (Admin only)")
@@ -637,7 +683,7 @@ async def check_user_tokens(interaction: discord.Interaction, member: discord.Me
         await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
         return
     
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
     
     # Get user's token summary
     total_given, total_deposited, current_balance, net_tokens, total_removed = get_user_token_summary(
@@ -650,14 +696,14 @@ async def check_user_tokens(interaction: discord.Interaction, member: discord.Me
     embed = discord.Embed(
         title=f"📊 Token History: {member.display_name}",
         description="*Complete token transaction summary*",
-        color=discord.Color.from_rgb(100, 149, 237))  # Cornflower blue
+        color=discord.Color.from_rgb(100, 149, 237))
     
     # Add user avatar
     embed.set_thumbnail(url=member.display_avatar.url)
     
-    # Token statistics
+    # Token statistics (förenklad utan "Tokens Removed")
     embed.add_field(
-        name="🎁 Total Tokens Given",
+        name="🎁 Net Tokens Given",
         value=f"**{total_given}** tokens",
         inline=True
     )
@@ -674,24 +720,9 @@ async def check_user_tokens(interaction: discord.Interaction, member: discord.Me
         inline=True
     )
     
-    if total_removed > 0:
-        embed.add_field(
-            name="❌ Tokens Removed",
-            value=f"**{total_removed}** tokens",
-            inline=True
-        )
-    
-    # Calculate lifetime value
-    lifetime_tokens = total_given - total_removed
-    embed.add_field(
-        name="💎 Net Lifetime Tokens",
-        value=f"**{lifetime_tokens}** tokens",
-        inline=True
-    )
-    
     # Usage calculation
-    if lifetime_tokens > 0:
-        usage_percentage = (total_deposited / lifetime_tokens) * 100
+    if total_given > 0:
+        usage_percentage = (total_deposited / total_given) * 100
         embed.add_field(
             name="📈 Usage Rate",
             value=f"**{usage_percentage:.1f}%** deposited",
@@ -700,11 +731,9 @@ async def check_user_tokens(interaction: discord.Interaction, member: discord.Me
     
     # Add a summary section
     if total_given > 0:
-        summary_text = f"• Received **{total_given}** tokens from admins\n"
+        summary_text = f"• Net tokens received: **{total_given}** tokens\n"
         if total_deposited > 0:
             summary_text += f"• Deposited **{total_deposited}** tokens to bank\n"
-        if total_removed > 0:
-            summary_text += f"• Had **{total_removed}** tokens removed\n"
         summary_text += f"• Currently holds **{current_balance}** tokens"
         
         embed.add_field(
@@ -715,7 +744,7 @@ async def check_user_tokens(interaction: discord.Interaction, member: discord.Me
     else:
         embed.add_field(
             name="📋 Summary",
-            value="*This user has never received any tokens.*",
+            value="*This user has no net tokens received.*",
             inline=False
         )
     
@@ -729,7 +758,7 @@ async def check_user_tokens(interaction: discord.Interaction, member: discord.Me
                    admin=interaction.user, 
                    member=member)
     
-    await interaction.followup.send(embed=embed) 
+    await interaction.followup.send(embed=embed)
 
 # Command to check personal balance
 @bot.tree.command(name="balance", description="Check your token balance")
@@ -933,8 +962,6 @@ async def bank_help_command(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=False)
     
     commands_list = bot.tree.get_commands()
-
-    
     
     # Create an embed for commands
     embed = discord.Embed(
@@ -950,8 +977,8 @@ async def bank_help_command(interaction: discord.Interaction):
     admin_commands = []
     
     for cmd in commands_list:
-        # Filter to include all commands
-        if cmd.name in ["balance", "balances", "deposit", "bank-help",]:
+        # Filter to include all commands - lagt till check_user_balance här
+        if cmd.name in ["balance", "balances", "deposit", "bank-help", "check_user_balance"]:
             user_commands.append(f"• `/{cmd.name}` - {cmd.description}")
         elif cmd.name in ["give_tokens", "remove_tokens", "reset_all_tokens", "log", "create_backup", "list_backups", "restore_backup", "confirm_restore", "stats", "user_tokens"]:
             admin_commands.append(f"• `/{cmd.name}` - {cmd.description}")
