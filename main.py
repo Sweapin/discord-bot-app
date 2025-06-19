@@ -406,6 +406,103 @@ async def list_backups(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="verify-balance", description="Compare token balances between two users")
+@app_commands.describe(
+    user1="First user to check balance for",
+    user2="Second user to check balance for"
+)
+async def verify_balance(interaction: discord.Interaction, user1: discord.Member, user2: discord.Member):
+    await interaction.response.defer(ephemeral=False)
+    
+    # Load token data
+    token_data = load_token_data()
+    guild_id = str(interaction.guild_id)
+    user1_id = str(user1.id)
+    user2_id = str(user2.id)
+
+    # Get token counts for both users
+    user1_tokens = 0
+    user2_tokens = 0
+    
+    if guild_id in token_data:
+        if user1_id in token_data[guild_id]:
+            user1_tokens = token_data[guild_id][user1_id]
+        if user2_id in token_data[guild_id]:
+            user2_tokens = token_data[guild_id][user2_id]
+
+    # Create a comparison embed
+    embed = discord.Embed(
+        title="⚖️ Token Balance Verification",
+        description="*Comparing token balances between two users*",
+        color=discord.Color.from_rgb(70, 130, 180)
+    )
+    
+    # Add user 1 info
+    user1_coins = "🪙" * user1_tokens if user1_tokens > 0 else "❌"
+    embed.add_field(
+        name=f"👤 {user1.display_name}",
+        value=f"{user1_coins}\n**{user1_tokens}** token{'s' if user1_tokens != 1 else ''}",
+        inline=True
+    )
+    
+    # Add comparison indicator
+    if user1_tokens > user2_tokens:
+        comparison = "🔺"
+        comparison_text = f"{user1.display_name} has more"
+    elif user2_tokens > user1_tokens:
+        comparison = "🔻"
+        comparison_text = f"{user2.display_name} has more"
+    else:
+        comparison = "⚖️"
+        comparison_text = "Equal balances"
+    
+    embed.add_field(
+        name="Comparison",
+        value=f"{comparison}\n*{comparison_text}*",
+        inline=True
+    )
+    
+    # Add user 2 info
+    user2_coins = "🪙" * user2_tokens if user2_tokens > 0 else "❌"
+    embed.add_field(
+        name=f"👤 {user2.display_name}",
+        value=f"{user2_coins}\n**{user2_tokens}** token{'s' if user2_tokens != 1 else ''}",
+        inline=True
+    )
+    
+    # Add summary section
+    total_tokens = user1_tokens + user2_tokens
+    difference = abs(user1_tokens - user2_tokens)
+    
+    summary_text = f"• **Total tokens:** {total_tokens}\n"
+    summary_text += f"• **Difference:** {difference} token{'s' if difference != 1 else ''}\n"
+    
+    if user1_tokens == user2_tokens:
+        summary_text += "• **Status:** Both users have equal tokens! ⚖️"
+    else:
+        higher_user = user1.display_name if user1_tokens > user2_tokens else user2.display_name
+        summary_text += f"• **Status:** {higher_user} leads by {difference} token{'s' if difference != 1 else ''}"
+    
+    embed.add_field(
+        name="📊 Summary",
+        value=summary_text,
+        inline=False
+    )
+    
+    # Add footer with verification info
+    embed.set_footer(text=f"Verified by {interaction.user.display_name}")
+    embed.timestamp = discord.utils.utcnow()
+
+    # Log transaction
+    log_transaction(
+        interaction.guild.name, 
+        "VERIFY_BALANCE", 
+        admin=interaction.user, 
+        member=f"{user1.name} vs {user2.name}"
+    )
+
+    await interaction.followup.send(embed=embed)
+
 # Command to restore from backup (Admin only)
 @bot.tree.command(name="restore_backup", description="Restore token data from a backup (Admin only)")
 @app_commands.describe(backup_number="Backup number from list_backups command")
@@ -978,7 +1075,7 @@ async def bank_help_command(interaction: discord.Interaction):
     
     for cmd in commands_list:
         # Filter to include all commands - lagt till check_user_balance här
-        if cmd.name in ["balance", "balances", "deposit", "bank-help", "check_user_balance"]:
+        if cmd.name in ["balance", "balances", "deposit", "bank-help", "check_user_balance", "verify-balance"]:
             user_commands.append(f"• `/{cmd.name}` - {cmd.description}")
         elif cmd.name in ["give_tokens", "remove_tokens", "reset_all_tokens", "log", "create_backup", "list_backups", "restore_backup", "confirm_restore", "stats", "user_tokens"]:
             admin_commands.append(f"• `/{cmd.name}` - {cmd.description}")
