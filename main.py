@@ -430,62 +430,39 @@ async def verify_balance(interaction: discord.Interaction, user1: discord.Member
         if user2_id in token_data[guild_id]:
             user2_tokens = token_data[guild_id][user2_id]
 
-    # Create a comparison embed
+    # Create a simple verification embed
     embed = discord.Embed(
-        title="⚖️ Token Balance Verification",
-        description="*Comparing token balances between two users*",
+        title="⚖️ Token Verification",
         color=discord.Color.from_rgb(70, 130, 180)
     )
     
-    # Add user 1 info
-    user1_coins = "🪙" * user1_tokens if user1_tokens > 0 else "❌"
+    # Add user balances
+    balance_text = f"**{user1.display_name}** - {user1_tokens} token{'s' if user1_tokens != 1 else ''}\n"
+    balance_text += f"**{user2.display_name}** - {user2_tokens} token{'s' if user2_tokens != 1 else ''}"
+    
     embed.add_field(
-        name=f"👤 {user1.display_name}",
-        value=f"{user1_coins}\n**{user1_tokens}** token{'s' if user1_tokens != 1 else ''}",
-        inline=True
+        name="Token Balances",
+        value=balance_text,
+        inline=False
     )
     
-    # Add comparison indicator
-    if user1_tokens > user2_tokens:
-        comparison = "🔺"
-        comparison_text = f"{user1.display_name} has more"
-    elif user2_tokens > user1_tokens:
-        comparison = "🔻"
-        comparison_text = f"{user2.display_name} has more"
-    else:
-        comparison = "⚖️"
-        comparison_text = "Equal balances"
+    # Determine verification status with specific user names
+    if user1_tokens >= 1 and user2_tokens >= 1:
+        verification_text = "✅ Both players have enough tokens to proceed"
+        embed.color = discord.Color.green()
+    elif user1_tokens == 0 and user2_tokens == 0:
+        verification_text = f"❌ {user1.display_name} and {user2.display_name} do not hold enough tokens to proceed"
+        embed.color = discord.Color.red()
+    elif user1_tokens == 0:
+        verification_text = f"❌ {user1.display_name} does not hold enough tokens to proceed"
+        embed.color = discord.Color.red()
+    else:  # user2_tokens == 0
+        verification_text = f"❌ {user2.display_name} does not hold enough tokens to proceed"
+        embed.color = discord.Color.red()
     
     embed.add_field(
-        name="Comparison",
-        value=f"{comparison}\n*{comparison_text}*",
-        inline=True
-    )
-    
-    # Add user 2 info
-    user2_coins = "🪙" * user2_tokens if user2_tokens > 0 else "❌"
-    embed.add_field(
-        name=f"👤 {user2.display_name}",
-        value=f"{user2_coins}\n**{user2_tokens}** token{'s' if user2_tokens != 1 else ''}",
-        inline=True
-    )
-    
-    # Add summary section
-    total_tokens = user1_tokens + user2_tokens
-    difference = abs(user1_tokens - user2_tokens)
-    
-    summary_text = f"• **Total tokens:** {total_tokens}\n"
-    summary_text += f"• **Difference:** {difference} token{'s' if difference != 1 else ''}\n"
-    
-    if user1_tokens == user2_tokens:
-        summary_text += "• **Status:** Both users have equal tokens! ⚖️"
-    else:
-        higher_user = user1.display_name if user1_tokens > user2_tokens else user2.display_name
-        summary_text += f"• **Status:** {higher_user} leads by {difference} token{'s' if difference != 1 else ''}"
-    
-    embed.add_field(
-        name="📊 Summary",
-        value=summary_text,
+        name="Verification",
+        value=verification_text,
         inline=False
     )
     
